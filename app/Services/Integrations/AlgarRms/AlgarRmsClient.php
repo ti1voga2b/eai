@@ -2,8 +2,8 @@
 
 namespace App\Services\Integrations\AlgarRms;
 
-use Illuminate\Http\Client\Response;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
@@ -12,6 +12,7 @@ use InvalidArgumentException;
 final class AlgarRmsClient
 {
     private const TOKEN_CACHE_PREFIX = 'integrations:algar-rms:access-token:';
+
     private const TOKEN_LOCK_PREFIX = 'integrations:algar-rms:access-token-lock:';
 
     /**
@@ -63,8 +64,8 @@ final class AlgarRmsClient
     private function accessToken(bool $forceRefresh = false, ?string $rejectedToken = null): string
     {
         $configuration = $this->configuration();
-        $cacheKey = self::TOKEN_CACHE_PREFIX . $this->credentialFingerprint($configuration);
-        $lockKey = self::TOKEN_LOCK_PREFIX . $this->credentialFingerprint($configuration);
+        $cacheKey = self::TOKEN_CACHE_PREFIX.$this->credentialFingerprint($configuration);
+        $lockKey = self::TOKEN_LOCK_PREFIX.$this->credentialFingerprint($configuration);
 
         return Cache::lock($lockKey, 30)->block(20, function () use (
             $configuration,
@@ -87,7 +88,7 @@ final class AlgarRmsClient
                     ->timeout(15)
                     ->connectTimeout(5)
                     ->withoutRedirecting()
-                    ->post($configuration['base_url'] . '/auth/token', [
+                    ->post($configuration['base_url'].'/auth/token', [
                         'client_id' => $configuration['client_id'],
                         'client_secret' => $configuration['client_secret'],
                     ]);
@@ -130,7 +131,7 @@ final class AlgarRmsClient
                 ->timeout(15)
                 ->connectTimeout(5)
                 ->withoutRedirecting()
-                ->get($configuration['base_url'] . '/v2/subscribers', $query);
+                ->get($configuration['base_url'].'/v2/subscribers', $query);
         } catch (ConnectionException) {
             throw new AlgarRmsException('subscriber listing transport');
         }
