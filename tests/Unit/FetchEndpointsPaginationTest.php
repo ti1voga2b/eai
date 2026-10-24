@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\CadEndpoint;
+use App\Models\CadInterfaceStatus;
 use App\Models\Client;
 use Carbon\Carbon;
 use Illuminate\Database\Schema\Blueprint;
@@ -29,12 +30,12 @@ function createPaginationEndpoint(array $overrides = []): CadEndpoint
 {
     $client = Client::create([
         'name' => 'Cliente Paginação',
-        'code' => 'cliente-paginacao-' . uniqid(),
+        'code' => 'cliente-paginacao-'.uniqid(),
     ]);
 
     return CadEndpoint::create(array_merge([
         'client_id' => $client->id,
-        'nome' => 'orders-' . uniqid(),
+        'nome' => 'orders-'.uniqid(),
         'metodo' => 'GET',
         'url' => 'https://api.test/orders',
         'extensao' => 'json',
@@ -48,6 +49,7 @@ function createPaginationEndpoint(array $overrides = []): CadEndpoint
         'timeout' => 1,
         'tentativas' => 1,
         'payload' => null,
+        'post_read_only' => false,
         'pagination' => pagePagination(),
     ], $overrides));
 }
@@ -90,6 +92,7 @@ beforeEach(function () {
         $table->foreignId('client_id');
         $table->string('nome');
         $table->string('metodo');
+        $table->boolean('post_read_only')->default(false);
         $table->text('url');
         $table->string('extensao');
         $table->json('headers')->nullable();
@@ -134,7 +137,7 @@ test('an endpoint without pagination keeps the single request behavior', functio
     $this->artisan('app:fetch-endpoints', ['--id' => $endpoint->id])->assertExitCode(0);
 
     Http::assertSentCount(1);
-    Http::assertSent(fn ($request) => !isset(requestQuery($request)['page']) && !isset(requestQuery($request)['size']));
+    Http::assertSent(fn ($request) => ! isset(requestQuery($request)['page']) && ! isset(requestQuery($request)['size']));
     $files = Storage::disk('integrations')->files(paginationRawDirectory($endpoint));
     expect($files)->toHaveCount(1)
         ->and(basename($files[0]))->not->toContain('-page-');
@@ -235,6 +238,39 @@ test('an explicit query location keeps pagination in query and preserves the req
             && $query['size'] === '100'
             && requestBody($request) === $payload;
     });
+});
+
+test('a POST query explicitly confirmed read-only retries a transient paginated failure', function () {
+    $endpoint = createPaginationEndpoint([
+        'metodo' => 'POST',
+        'post_read_only' => true,
+        'tentativas' => 2,
+        'payload' => json_encode(['filters' => ['status' => 'active']]),
+        'pagination' => pagePagination(['location' => 'query']),
+    ]);
+    $attempts = 0;
+    Http::fake(function () use (&$attempts) {
+        $attempts++;
+
+        return $attempts === 1
+            ? Http::response('temporarily unavailable', 503)
+            : Http::response('{"meta":{"currentPage":1,"totalPages":1}}', 200);
+    });
+
+    $this->artisan('app:fetch-endpoints', ['--id' => $endpoint->id])->assertExitCode(0);
+
+    Http::assertSentCount(2);
+    Http::assertSent(function ($request) {
+        $query = requestQuery($request);
+
+        return $request->method() === 'POST'
+            && ($query['page'] ?? null) === '1'
+            && ($query['size'] ?? null) === '100';
+    });
+
+    expect($attempts)->toBe(2)
+        ->and($endpoint->refresh()->next_run->toDateTimeString())->toBe('2026-09-01 10:30:00')
+        ->and(CadInterfaceStatus::where('int_status', 5)->count())->toBe(0);
 });
 
 test('a body location uses dot notation and preserves the base payload across pages', function () {

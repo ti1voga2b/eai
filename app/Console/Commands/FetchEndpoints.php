@@ -19,6 +19,8 @@ class FetchEndpoints extends Command
     // dão margem conservadora sem deixar um lock órfão preso por muito tempo.
     private const ENDPOINT_LOCK_TTL_SECONDS = 900;
 
+    private bool $writeRequestAttempted = false;
+
     /**
      * O nome e a assinatura do comando.
      * Adicionada a opção --id para execuções forçadas/testes.
@@ -79,6 +81,7 @@ class FetchEndpoints extends Command
             return;
         }
 
+        $this->writeRequestAttempted = false;
         try {
             try {
                 $success = $this->processEndpointLocked($endpoint);
@@ -88,7 +91,12 @@ class FetchEndpoints extends Command
                 $success = false;
             }
 
-            $this->updateNextRun($endpoint, $success);
+            $reconciliationPending = !$success && $this->writeRequestAttempted;
+            if ($reconciliationPending) {
+                $this->recordWriteReconciliationPending($endpoint);
+            }
+
+            $this->updateNextRun($endpoint, $success, $reconciliationPending);
         } finally {
             $lock->release();
         }
@@ -138,7 +146,10 @@ class FetchEndpoints extends Command
                 $request->withBasicAuth($endpoint->auth_user, $endpoint->auth_pass);
             }
 
-            $request->retry($attempts, 200);
+            // POST só é repetível após classificação explícita como leitura sem efeitos.
+            if ($this->isSafeToRetry($endpoint, $method)) {
+                $request->retry(max(1, $attempts), 200);
+            }
 
             $payload = is_array($endpoint->payload) ? $endpoint->payload : json_decode($endpoint->payload, true);
             $paginationType = strtolower($endpoint->pagination['type'] ?? 'none');
@@ -165,6 +176,10 @@ class FetchEndpoints extends Command
             }
 
             // Determina se envia Body (Payload) ou Query Params
+            if (!$this->isSafeToRetry($endpoint, $method)) {
+                $this->writeRequestAttempted = true;
+            }
+
             if (in_array($method, ['post', 'put', 'patch'])) {
                 $response = $request->{$method}($endpoint->url, $payload ?: []);
             } else {
@@ -245,6 +260,9 @@ class FetchEndpoints extends Command
                         json_encode($params, JSON_THROW_ON_ERROR),
                         'application/json'
                     );
+                    if (!$this->isSafeToRetry($endpoint, $method)) {
+                        $this->writeRequestAttempted = true;
+                    }
                     $response = $pageRequest->{$method}($endpoint->url);
                 } else {
                     $params = $payload;
@@ -257,8 +275,14 @@ class FetchEndpoints extends Command
                             $pageParam => $requestedPage,
                             $pageSizeParam => $pageSize,
                         ]);
+                        if (!$this->isSafeToRetry($endpoint, $method)) {
+                            $this->writeRequestAttempted = true;
+                        }
                         $response = $pageRequest->{$method}($endpoint->url, $payload);
                     } else {
+                        if (!$this->isSafeToRetry($endpoint, $method)) {
+                            $this->writeRequestAttempted = true;
+                        }
                         $response = $request->{$method}($endpoint->url, $params);
                     }
                 }
@@ -325,12 +349,28 @@ class FetchEndpoints extends Command
         return null;
     }
 
-    private function updateNextRun(CadEndpoint $endpoint, bool $success): void
+    private function isSafeToRetry(CadEndpoint $endpoint, string $method): bool
+    {
+        return in_array($method, ['get', 'head', 'options'], true)
+            || ($method === 'post' && $endpoint->post_read_only === true);
+    }
+
+    private function updateNextRun(
+        CadEndpoint $endpoint,
+        bool $success,
+        bool $reconciliationPending = false
+    ): void
     {
         try {
-            $endpoint->next_run = $success
-                ? ($endpoint->timer == 0 ? null : $endpoint->roundedTimestamp())
-                : now()->addMinutes(5);
+            if ($reconciliationPending) {
+                $endpoint->next_run = null;
+                $this->warn("   ⚠️ Escrita incerta ou POST sem confirmação read-only; endpoint ID {$endpoint->id} suspenso até revisão/reconciliação.");
+            } else {
+                $endpoint->next_run = $success
+                    ? ($endpoint->timer == 0 ? null : $endpoint->roundedTimestamp())
+                    : now()->addMinutes(5);
+            }
+
             $endpoint->save();
 
             if ($endpoint->next_run) {
@@ -339,6 +379,26 @@ class FetchEndpoints extends Command
         } catch (\Exception $e) {
             $this->error("   ❌ Erro ao agendar: " . $e::class
                 . ($e instanceof \Illuminate\Http\Client\RequestException ? ' HTTP ' . $e->response->status() : ''));
+        }
+    }
+
+    private function recordWriteReconciliationPending(CadEndpoint $endpoint): void
+    {
+        try {
+            CadInterfaceStatus::create([
+                'int_direcao' => $endpoint->direcao ?: 'entrada',
+                'int_interface' => Str::substr((string) $endpoint->nome, 0, 10),
+                'int_arquivo' => null,
+                'int_idoc' => 'R' . Str::substr(hash('sha256', $endpoint->id . '|' . now()->format('U.u')), 0, 24),
+                'int_status' => 5,
+                'int_data_processamento' => now(),
+                'int_envio' => '0',
+                'int_mensagem' => "Resultado de escrita incerto ou POST sem classificação read-only; revisão/reconciliação manual necessária. Endpoint ID {$endpoint->id}.",
+                'int_data_envio' => now(),
+            ]);
+        } catch (\Throwable) {
+            // Keep the schedule stopped even if the audit row cannot be persisted.
+            $this->error("   ❌ Não foi possível gravar o registro de reconciliação do endpoint ID {$endpoint->id}.");
         }
     }
 
