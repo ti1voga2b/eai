@@ -67,6 +67,7 @@ class CadEndpointResource extends Resource
 				'PATCH' => 'PATCH'
                             ])
                             ->default('POST')
+                            ->live()
                             ->required(),
 			Select::make('client_id')
 	                    ->label('Cliente')
@@ -161,6 +162,12 @@ class CadEndpointResource extends Resource
                             ->label('Tentativas Máximas')
                             ->numeric()
                             ->default(3),
+
+                        Toggle::make('post_read_only')
+                            ->label('POST confirmado como consulta sem efeitos colaterais')
+                            ->helperText('Ative somente após confirmar no contrato do provedor que esta operação não altera estado e pode ser repetida. POSTs não classificados não serão repetidos automaticamente.')
+                            ->default(false)
+                            ->visible(fn ($get) => strtoupper((string) $get('metodo')) === 'POST'),
 
                         TextInput::make('descricao')
                             ->label('Descrição')

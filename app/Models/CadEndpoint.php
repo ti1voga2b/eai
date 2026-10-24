@@ -14,7 +14,7 @@ class CadEndpoint extends Model
 	'headers', 'autenticacao', 'auth_user', 'direcao', 'timer', 'next_run',
 	'type_storage_token', 'auth_pass', 'auth_token', 'ativo', 'timeout',
 	'tentativas', 'descricao', 'payload',
-	'pagination',
+	'pagination', 'post_read_only',
     ];
 
     protected $casts = [
@@ -22,6 +22,7 @@ class CadEndpoint extends Model
         'ativo' => 'boolean',
 	'next_run' => 'datetime',
 	'pagination' => 'array',
+	'post_read_only' => 'boolean',
     ];
 
     /**

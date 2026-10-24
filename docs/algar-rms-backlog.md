@@ -184,10 +184,10 @@ A primeira entrega implementa o serviço interno de acesso ao provedor. Ela **n�
 |---|---|---|---|
 | POST `/auth/token` e cache/renovação Bearer | Implementado | Aprovado: sucesso, reutilização, expiração, 401 consecutivo, timeout e token inválido | Pendente: faltam host real e credenciais Sandbox |
 | GET `/v2/subscribers` com `page`, `size`, `q` e envelope `data/meta` | Implementado | Aprovado: paginação, resposta inválida, 401 e timeout | Pendente: faltam host real e credenciais Sandbox |
-| Bloqueio de reenvio agendado após escrita incerta | Implementado para falhas tratadas | Aprovado: 5xx e timeout ficam em reconciliação quando o registro local é persistido | Não se aplica à API Algar nova; validação operacional EAI pendente |
+| Bloqueio de reenvio agendado após escrita incerta | Implementado para falhas tratadas; POST repetível exige classificação explícita | Aprovado: leitura POST marcada pode repetir; POST sem confirmação fica em reconciliação após falha incerta | Não se aplica à API Algar nova; validação operacional EAI pendente |
 | Ação no painel ou API pública para o site | Não implementada | Não testado | Fora do escopo desta etapa |
 
-Suíte desta entrega: **13 testes do cliente Algar (simulados) e 18 testes de concorrência/agendamento relacionados**, incluídos na suíte Unit geral, que passou com 206 testes e 835 assertions.
+Suíte desta entrega: **13 testes do cliente Algar (simulados), testes de concorrência/agendamento e classificação manual POST**, incluídos na suíte Unit geral, que passou com 210 testes e 848 assertions.
 
 ## Como executar a consulta no Sandbox
 
@@ -211,6 +211,21 @@ Até esta etapa, o comando acima foi documentado, mas **não foi executado contr
 2. O cache de token é separado por host e credenciais, e a chave usa fingerprint SHA-256. O segredo bruto não é escrito em código, logs ou chave do cache.
 3. A listagem de assinantes aceita `page`, `size` e `q` e valida o envelope `data/meta`, incluindo `currentPage`, `pageSize`, `totalItems` e `totalPages`.
 4. Testes usam respostas HTTP simuladas. Sandbox não foi validado porque o host real e as credenciais de credenciamento não foram fornecidos a esta execução.
-5. O bloqueio atual cobre falhas tratadas: elas geram `int_status=5` (Reconciliação pendente), deixam `next_run` nulo e saem da seleção automática do scheduler se a gravação local for concluída. Um operador deve reconciliar o estado com o provedor antes de retomar manualmente o endpoint. Consultas mantêm seus retries e reexecução agendada atuais.
+5. O bloqueio atual cobre falhas tratadas: operações não repetíveis geram `int_status=5` (Reconciliação pendente), deixam `next_run` nulo e saem da seleção automática do scheduler se a gravação local for concluída. Um operador deve reconciliar o estado com o provedor antes de retomar manualmente o endpoint. GET/HEAD/OPTIONS preservam retries; POST só repete com classificação explícita `post_read_only=true`.
 6. **Limitação importante:** uma queda do processo após o envio, ou falha ao persistir `next_run`, ainda pode permitir reenvio de uma escrita. Antes de habilitar escritas operacionais, o EAI deve registrar duravelmente a tentativa antes da chamada externa e encaminhar tentativas interrompidas para reconciliação. O bloqueio atual não é garantia de execução única.
-7. Operações de escrita permanecem fora do escopo do cliente Algar novo. No pipeline genérico, retries HTTP são limitados a GET/HEAD/OPTIONS; falhas tratadas de envios não idempotentes param o agendamento, mas a limitação acima continua válida até existir registro durável pré-chamada.
+7. Operações de escrita permanecem fora do escopo do cliente Algar novo. No pipeline genérico, métodos de leitura GET/HEAD/OPTIONS preservam retries. Um POST só recebe retries quando `post_read_only=true`; a classificação é uma confirmação explícita do operador de que o endpoint é sem efeitos colaterais. POST não classificado, PUT, PATCH e demais métodos não seguros não são repetidos e falhas tratadas vão para revisão/reconciliação.
+
+## Classificação manual de endpoints POST existentes
+
+A migration `2026_10_24_135500_add_post_read_only_to_cad_endpoints_table` adiciona `post_read_only` com `DEFAULT false`. As linhas existentes são preservadas, mas nenhum POST recebe autorização automática para retry. Os retries HTTP anteriores de POST deixam de ocorrer até que cada operação seja revisada; falhas de POST não classificado ficam suspensas para revisão/reconciliação.
+
+Para inventariar os endpoints que precisam de revisão manual, execute no banco do ambiente EAI apropriado:
+
+```sql
+SELECT id, client_id, nome, direcao, metodo, ativo
+FROM cad_endpoints
+WHERE UPPER(metodo) = 'POST'
+ORDER BY client_id, id;
+```
+
+Revise todos os resultados, inclusive endpoints de autenticação e POST paginados, no contrato do provedor e com o responsável funcional. No painel de endpoints, habilite **POST confirmado como consulta sem efeitos colaterais** apenas para consultas comprovadamente read-only, cujo replay não cria, atualiza, provisiona, ativa, cancela ou duplica efeitos. Mantenha desabilitado para escritas ou sem confirmação. Reavalie a classificação sempre que URL, payload ou semântica do provedor mudar. Não classifique escritas operacionais para habilitar retries.

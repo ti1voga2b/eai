@@ -1,6 +1,5 @@
 <?php
 
-use App\Console\Commands\FetchEndpoints;
 use App\Models\CadEndpoint;
 use App\Models\CadInterfaceStatus;
 use App\Models\Client;
@@ -19,12 +18,12 @@ function createConcurrencyEndpoint(array $overrides = []): CadEndpoint
 {
     $client = Client::create([
         'name' => 'Cliente Concorrência',
-        'code' => 'cliente-concorrencia-' . uniqid(),
+        'code' => 'cliente-concorrencia-'.uniqid(),
     ]);
 
     return CadEndpoint::create(array_merge([
         'client_id' => $client->id,
-        'nome' => 'orders-' . uniqid(),
+        'nome' => 'orders-'.uniqid(),
         'metodo' => 'GET',
         'url' => 'https://api.test/orders',
         'extensao' => 'json',
@@ -38,6 +37,7 @@ function createConcurrencyEndpoint(array $overrides = []): CadEndpoint
         'timeout' => 1,
         'tentativas' => 1,
         'payload' => null,
+        'post_read_only' => false,
     ], $overrides));
 }
 
@@ -61,6 +61,7 @@ beforeEach(function () {
         $table->foreignId('client_id');
         $table->string('nome');
         $table->string('metodo');
+        $table->boolean('post_read_only')->default(false);
         $table->text('url');
         $table->string('extensao');
         $table->json('headers')->nullable();
@@ -229,9 +230,9 @@ test('a transport exception schedules a retry five minutes after the attempt', f
     expect($endpoint->refresh()->next_run->toDateTimeString())->toBe('2026-08-30 16:12:00');
 });
 
-test('an uncertain POST failure is recorded and excluded from subsequent scheduled runs', function () {
+test('an unclassified POST failure is recorded and excluded from subsequent scheduled runs', function () {
     Carbon::setTestNow('2026-08-30 16:07:00');
-    $endpoint = createConcurrencyEndpoint(['metodo' => 'POST', 'timer' => 30]);
+    $endpoint = createConcurrencyEndpoint(['metodo' => 'POST', 'post_read_only' => false, 'timer' => 30]);
     $requestCount = 0;
     Http::fake(function () use (&$requestCount) {
         $requestCount++;
@@ -255,9 +256,9 @@ test('an uncertain POST failure is recorded and excluded from subsequent schedul
     expect($requestCount)->toBe(1);
 });
 
-test('an uncertain POST timeout is recorded and not retried by the scheduler', function () {
+test('an unclassified POST timeout is recorded and not retried by the scheduler', function () {
     Carbon::setTestNow('2026-08-30 16:07:00');
-    $endpoint = createConcurrencyEndpoint(['metodo' => 'POST', 'timer' => 30]);
+    $endpoint = createConcurrencyEndpoint(['metodo' => 'POST', 'post_read_only' => false, 'timer' => 30]);
     $requestCount = 0;
     Http::fake(function () use (&$requestCount) {
         $requestCount++;
@@ -319,6 +320,7 @@ test('a failed auth POST preserves its scheduled retry instead of entering write
     $endpoint = createConcurrencyEndpoint([
         'metodo' => 'POST',
         'direcao' => 'auth',
+        'post_read_only' => true,
         'timer' => 30,
     ]);
     Http::fake(['*' => Http::response(['error' => 'temporarily unavailable'], 503)]);

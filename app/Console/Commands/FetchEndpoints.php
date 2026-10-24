@@ -146,7 +146,7 @@ class FetchEndpoints extends Command
                 $request->withBasicAuth($endpoint->auth_user, $endpoint->auth_pass);
             }
 
-            // Escritas podem duplicar efeitos; retries ficam para leituras seguras e POST de token.
+            // POST só é repetível após classificação explícita como leitura sem efeitos.
             if ($this->isSafeToRetry($endpoint, $method)) {
                 $request->retry(max(1, $attempts), 200);
             }
@@ -275,7 +275,9 @@ class FetchEndpoints extends Command
                             $pageParam => $requestedPage,
                             $pageSizeParam => $pageSize,
                         ]);
-                        $this->writeRequestAttempted = true;
+                        if (!$this->isSafeToRetry($endpoint, $method)) {
+                            $this->writeRequestAttempted = true;
+                        }
                         $response = $pageRequest->{$method}($endpoint->url, $payload);
                     } else {
                         if (!$this->isSafeToRetry($endpoint, $method)) {
@@ -350,7 +352,7 @@ class FetchEndpoints extends Command
     private function isSafeToRetry(CadEndpoint $endpoint, string $method): bool
     {
         return in_array($method, ['get', 'head', 'options'], true)
-            || (strtolower((string) $endpoint->direcao) === 'auth' && $method === 'post');
+            || ($method === 'post' && $endpoint->post_read_only === true);
     }
 
     private function updateNextRun(
@@ -362,7 +364,7 @@ class FetchEndpoints extends Command
         try {
             if ($reconciliationPending) {
                 $endpoint->next_run = null;
-                $this->warn("   ⚠️ Escrita incerta; endpoint ID {$endpoint->id} suspenso até reconciliação.");
+                $this->warn("   ⚠️ Escrita incerta ou POST sem confirmação read-only; endpoint ID {$endpoint->id} suspenso até revisão/reconciliação.");
             } else {
                 $endpoint->next_run = $success
                     ? ($endpoint->timer == 0 ? null : $endpoint->roundedTimestamp())
@@ -391,7 +393,7 @@ class FetchEndpoints extends Command
                 'int_status' => 5,
                 'int_data_processamento' => now(),
                 'int_envio' => '0',
-                'int_mensagem' => "Resultado de escrita incerto; reconciliação manual necessária. Endpoint ID {$endpoint->id}.",
+                'int_mensagem' => "Resultado de escrita incerto ou POST sem classificação read-only; revisão/reconciliação manual necessária. Endpoint ID {$endpoint->id}.",
                 'int_data_envio' => now(),
             ]);
         } catch (\Throwable) {
