@@ -138,7 +138,10 @@ class FetchEndpoints extends Command
                 $request->withBasicAuth($endpoint->auth_user, $endpoint->auth_pass);
             }
 
-            $request->retry($attempts, 200);
+            // Escritas podem duplicar efeitos no provedor; somente leituras seguras são repetidas.
+            if (in_array($method, ['get', 'head', 'options'], true)) {
+                $request->retry(max(1, $attempts), 200);
+            }
 
             $payload = is_array($endpoint->payload) ? $endpoint->payload : json_decode($endpoint->payload, true);
             $paginationType = strtolower($endpoint->pagination['type'] ?? 'none');

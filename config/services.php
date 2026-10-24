@@ -35,4 +35,11 @@ return [
         ],
     ],
 
+    'algar_rms' => [
+        'base_url' => env('ALGAR_RMS_BASE_URL'),
+        'client_id' => env('ALGAR_RMS_CLIENT_ID'),
+        'client_secret' => env('ALGAR_RMS_CLIENT_SECRET'),
+        'refresh_skew_seconds' => env('ALGAR_RMS_TOKEN_REFRESH_SKEW', 60),
+    ],
+
 ];
