@@ -219,6 +219,8 @@ Até esta etapa, o comando acima foi documentado, mas **não foi executado contr
 
 A migration `2026_10_24_135500_add_post_read_only_to_cad_endpoints_table` adiciona `post_read_only` com `DEFAULT false`. As linhas existentes são preservadas, mas nenhum POST recebe autorização automática para retry. Os retries HTTP anteriores de POST deixam de ocorrer até que cada operação seja revisada; falhas de POST não classificado ficam suspensas para revisão/reconciliação.
 
+**Impacto em autenticações genéricas existentes:** endpoints `direcao=auth` com método POST que antes recebiam retry HTTP deixam de recebê-lo. Se o POST de emissão/renovação de token falhar ou expirar depois do envio, o endpoint fica em `int_status=5` e com `next_run=null` quando o estado é persistido; a renovação e integrações dependentes podem parar até revisão/reconciliação manual. Antes de aplicar a migration em qualquer ambiente operacional, inventarie e revise todos esses endpoints e prepare o procedimento de retomada. Mantenha `post_read_only=false` para emissão/rotação de token; não habilite essa flag apenas para obter retry.
+
 Para inventariar os endpoints que precisam de revisão manual, execute no banco do ambiente EAI apropriado:
 
 ```sql

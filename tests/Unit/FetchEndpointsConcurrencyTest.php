@@ -315,20 +315,35 @@ test('a storage failure does not report saved and schedules a retry', function (
     expect($endpoint->refresh()->next_run->toDateTimeString())->toBe('2026-08-30 16:12:00');
 });
 
-test('a failed auth POST preserves its scheduled retry instead of entering write reconciliation', function () {
+test('an auth POST defaults to non-read-only and is suspended after a handled failure', function () {
     Carbon::setTestNow('2026-08-30 16:07:00');
     $endpoint = createConcurrencyEndpoint([
         'metodo' => 'POST',
         'direcao' => 'auth',
-        'post_read_only' => true,
+        'post_read_only' => false,
         'timer' => 30,
+        'tentativas' => 3,
     ]);
-    Http::fake(['*' => Http::response(['error' => 'temporarily unavailable'], 503)]);
+    $requestCount = 0;
+    Http::fake(function () use (&$requestCount) {
+        $requestCount++;
 
-    $this->artisan('app:fetch-endpoints', ['--id' => $endpoint->id])->assertExitCode(0);
+        return Http::response(['error' => 'temporarily unavailable'], 503);
+    });
 
-    expect($endpoint->refresh()->next_run->toDateTimeString())->toBe('2026-08-30 16:12:00')
-        ->and(CadInterfaceStatus::where('int_status', 5)->count())->toBe(0);
+    $this->artisan('app:fetch-endpoints', ['--id' => $endpoint->id])
+        ->expectsOutputToContain('POST sem confirmação read-only')
+        ->assertExitCode(0);
+
+    $pending = CadInterfaceStatus::where('int_status', 5)->firstOrFail();
+    expect($endpoint->refresh()->next_run)->toBeNull()
+        ->and($pending->int_mensagem)->toContain('reconciliação manual necessária')
+        ->and($requestCount)->toBe(1);
+
+    Carbon::setTestNow('2026-08-30 16:08:00');
+    $this->artisan('app:fetch-endpoints')->assertExitCode(0);
+
+    expect($requestCount)->toBe(1);
 });
 
 test('a successful auth endpoint write uses the normal aligned schedule', function () {

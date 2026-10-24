@@ -259,6 +259,15 @@ test('a POST query explicitly confirmed read-only retries a transient paginated 
 
     $this->artisan('app:fetch-endpoints', ['--id' => $endpoint->id])->assertExitCode(0);
 
+    Http::assertSentCount(2);
+    Http::assertSent(function ($request) {
+        $query = requestQuery($request);
+
+        return $request->method() === 'POST'
+            && ($query['page'] ?? null) === '1'
+            && ($query['size'] ?? null) === '100';
+    });
+
     expect($attempts)->toBe(2)
         ->and($endpoint->refresh()->next_run->toDateTimeString())->toBe('2026-09-01 10:30:00')
         ->and(CadInterfaceStatus::where('int_status', 5)->count())->toBe(0);
