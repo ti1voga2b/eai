@@ -184,7 +184,7 @@ A primeira entrega implementa o serviço interno de acesso ao provedor. Ela **n�
 |---|---|---|---|
 | POST `/auth/token` e cache/renovação Bearer | Implementado | Aprovado: sucesso, reutilização, expiração, 401 consecutivo, timeout e token inválido | Pendente: faltam host real e credenciais Sandbox |
 | GET `/v2/subscribers` com `page`, `size`, `q` e envelope `data/meta` | Implementado | Aprovado: paginação, resposta inválida, 401 e timeout | Pendente: faltam host real e credenciais Sandbox |
-| Bloqueio de reenvio agendado após escrita incerta | Implementado | Aprovado: 5xx e timeout ficam em reconciliação e não são reexecutados pelo scheduler | Não se aplica à API Algar nova; validação operacional EAI pendente |
+| Bloqueio de reenvio agendado após escrita incerta | Implementado para falhas tratadas | Aprovado: 5xx e timeout ficam em reconciliação quando o registro local é persistido | Não se aplica à API Algar nova; validação operacional EAI pendente |
 | Ação no painel ou API pública para o site | Não implementada | Não testado | Fora do escopo desta etapa |
 
 Suíte desta entrega: **13 testes do cliente Algar (simulados) e 18 testes de concorrência/agendamento relacionados**, incluídos na suíte Unit geral, que passou com 206 testes e 835 assertions.
@@ -211,5 +211,6 @@ Até esta etapa, o comando acima foi documentado, mas **não foi executado contr
 2. O cache de token é separado por host e credenciais, e a chave usa fingerprint SHA-256. O segredo bruto não é escrito em código, logs ou chave do cache.
 3. A listagem de assinantes aceita `page`, `size` e `q` e valida o envelope `data/meta`, incluindo `currentPage`, `pageSize`, `totalItems` e `totalPages`.
 4. Testes usam respostas HTTP simuladas. Sandbox não foi validado porque o host real e as credenciais de credenciamento não foram fornecidos a esta execução.
-5. Escritas do pipeline genérico sem resultado confirmado geram `int_status=5` (Reconciliação pendente), deixam `next_run` nulo e saem da seleção automática do scheduler. Um operador deve reconciliar o estado com o provedor antes de retomar manualmente o endpoint. Consultas mantêm seus retries e reexecução agendada atuais.
-6. Operações de escrita permanecem fora do escopo do cliente Algar novo. No pipeline genérico, retries HTTP são limitados a GET/HEAD/OPTIONS; envios não idempotentes com falha ou timeout não são repetidos automaticamente pelo scheduler.
+5. O bloqueio atual cobre falhas tratadas: elas geram `int_status=5` (Reconciliação pendente), deixam `next_run` nulo e saem da seleção automática do scheduler se a gravação local for concluída. Um operador deve reconciliar o estado com o provedor antes de retomar manualmente o endpoint. Consultas mantêm seus retries e reexecução agendada atuais.
+6. **Limitação importante:** uma queda do processo após o envio, ou falha ao persistir `next_run`, ainda pode permitir reenvio de uma escrita. Antes de habilitar escritas operacionais, o EAI deve registrar duravelmente a tentativa antes da chamada externa e encaminhar tentativas interrompidas para reconciliação. O bloqueio atual não é garantia de execução única.
+7. Operações de escrita permanecem fora do escopo do cliente Algar novo. No pipeline genérico, retries HTTP são limitados a GET/HEAD/OPTIONS; falhas tratadas de envios não idempotentes param o agendamento, mas a limitação acima continua válida até existir registro durável pré-chamada.
