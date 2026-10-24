@@ -2,10 +2,12 @@
 
 use App\Console\Commands\FetchEndpoints;
 use App\Models\CadEndpoint;
+use App\Models\CadInterfaceStatus;
 use App\Models\Client;
 use Carbon\Carbon;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
@@ -227,6 +229,56 @@ test('a transport exception schedules a retry five minutes after the attempt', f
     expect($endpoint->refresh()->next_run->toDateTimeString())->toBe('2026-08-30 16:12:00');
 });
 
+test('an uncertain POST failure is recorded and excluded from subsequent scheduled runs', function () {
+    Carbon::setTestNow('2026-08-30 16:07:00');
+    $endpoint = createConcurrencyEndpoint(['metodo' => 'POST', 'timer' => 30]);
+    $requestCount = 0;
+    Http::fake(function () use (&$requestCount) {
+        $requestCount++;
+
+        return Http::response(['error' => 'temporary failure'], 503);
+    });
+
+    $this->artisan('app:fetch-endpoints')
+        ->expectsOutputToContain('Escrita incerta')
+        ->assertExitCode(0);
+
+    $pending = CadInterfaceStatus::where('int_status', 5)->firstOrFail();
+    expect($endpoint->refresh()->next_run)->toBeNull()
+        ->and($pending->int_mensagem)->toContain('reconciliação manual necessária')
+        ->and($pending->int_envio)->toBe('0')
+        ->and($requestCount)->toBe(1);
+
+    Carbon::setTestNow('2026-08-30 16:08:00');
+    $this->artisan('app:fetch-endpoints')->assertExitCode(0);
+
+    expect($requestCount)->toBe(1);
+});
+
+test('an uncertain POST timeout is recorded and not retried by the scheduler', function () {
+    Carbon::setTestNow('2026-08-30 16:07:00');
+    $endpoint = createConcurrencyEndpoint(['metodo' => 'POST', 'timer' => 30]);
+    $requestCount = 0;
+    Http::fake(function () use (&$requestCount) {
+        $requestCount++;
+        throw new ConnectionException('simulated timeout');
+    });
+
+    $this->artisan('app:fetch-endpoints')
+        ->expectsOutputToContain('Escrita incerta')
+        ->assertExitCode(0);
+
+    $pending = CadInterfaceStatus::where('int_status', 5)->firstOrFail();
+    expect($endpoint->refresh()->next_run)->toBeNull()
+        ->and($pending->int_mensagem)->toContain('reconciliação manual necessária')
+        ->and($requestCount)->toBe(1);
+
+    Carbon::setTestNow('2026-08-30 16:08:00');
+    $this->artisan('app:fetch-endpoints')->assertExitCode(0);
+
+    expect($requestCount)->toBe(1);
+});
+
 test('an unresolved authentication skips the request and schedules a retry', function () {
     Carbon::setTestNow('2026-08-30 16:07:00');
     $endpoint = createConcurrencyEndpoint([
@@ -260,6 +312,21 @@ test('a storage failure does not report saved and schedules a retry', function (
         ->assertExitCode(0);
 
     expect($endpoint->refresh()->next_run->toDateTimeString())->toBe('2026-08-30 16:12:00');
+});
+
+test('a failed auth POST preserves its scheduled retry instead of entering write reconciliation', function () {
+    Carbon::setTestNow('2026-08-30 16:07:00');
+    $endpoint = createConcurrencyEndpoint([
+        'metodo' => 'POST',
+        'direcao' => 'auth',
+        'timer' => 30,
+    ]);
+    Http::fake(['*' => Http::response(['error' => 'temporarily unavailable'], 503)]);
+
+    $this->artisan('app:fetch-endpoints', ['--id' => $endpoint->id])->assertExitCode(0);
+
+    expect($endpoint->refresh()->next_run->toDateTimeString())->toBe('2026-08-30 16:12:00')
+        ->and(CadInterfaceStatus::where('int_status', 5)->count())->toBe(0);
 });
 
 test('a successful auth endpoint write uses the normal aligned schedule', function () {

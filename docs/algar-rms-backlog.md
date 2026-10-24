@@ -4,18 +4,18 @@ Este arquivo acompanha o escopo da integração Algar/RMS sem tornar o modelo do
 
 **Legenda de status**
 
-- **Implementado — teste simulado:** código do cliente EAI e teste automatizado com HTTP fake; não significa validação no Sandbox.
-- **Backlog — não implementado / não testado:** fora da primeira etapa.
-- **Guia — não implementado / contrato a confirmar:** a fonte é um guia funcional, sem página OpenAPI individual no índice consultado.
+- **Implementação:** indica se o código está implementado ou continua no backlog.
+- **Teste simulado:** indica separadamente se os testes automatizados com HTTP fake passaram; isso não representa tráfego real.
+- **Validação no Sandbox:** permanece pendente até a execução autorizada com host e credenciais reais do Sandbox.
 
-A primeira entrega implementa o serviço interno de acesso ao provedor. Ela **não** cria ainda uma API pública do EAI para o site da empresa. A fachada pública, autenticação das aplicações consumidoras, autorização e contratos canônicos ficam para etapa própria.
+A primeira entrega implementa o serviço interno de acesso ao provedor. Ela **não** cria ainda uma API pública do EAI para o site da empresa nem uma ação no painel para executar a consulta. A fachada pública, autenticação das aplicações consumidoras, autorização e contratos canônicos ficam para etapa própria.
 
 ## Autenticação e assinantes
 
 | Status | Método | Caminho | Fonte oficial |
 |---|---|---|---|
-| Implementado — teste simulado | POST | `/auth/token` | [Gera token de acesso](https://telecom-enabler.readme.io/reference/authtoken.md) |
-| Implementado — teste simulado | GET | `/v2/subscribers` | [Lista assinantes](https://telecom-enabler.readme.io/reference/subscriberlist.md) |
+| Implementado; simulação aprovada; Sandbox pendente | POST | `/auth/token` | [Gera token de acesso](https://telecom-enabler.readme.io/reference/authtoken.md) |
+| Implementado; simulação aprovada; Sandbox pendente | GET | `/v2/subscribers` | [Lista assinantes](https://telecom-enabler.readme.io/reference/subscriberlist.md) |
 | Backlog — não implementado / não testado | POST | `/v2/subscribers` | [Novo assinante](https://telecom-enabler.readme.io/reference/subscribercreate.md) |
 | Backlog — não implementado / não testado | GET | `/v2/subscribers/{id}` | [Busca assinante pelo id](https://telecom-enabler.readme.io/reference/subscriberget.md) |
 | Backlog — não implementado / não testado | GET | `/v2/subscribers/by/document/{document}` | [Busca assinante pelo documento](https://telecom-enabler.readme.io/reference/subscribergetbydocument.md) |
@@ -178,10 +178,38 @@ A primeira entrega implementa o serviço interno de acesso ao provedor. Ela **n�
 | Backlog — não implementado / não testado | POST | `/v2/protocols/{id}/escalate` | [Escalona protocolo](https://telecom-enabler.readme.io/reference/protocolescalate.md) |
 | Backlog — não implementado / não testado | POST | `/v2/protocols/{id}/action` | [Executa ação](https://telecom-enabler.readme.io/reference/protocolaction.md) |
 
+## Status desta entrega
+
+| Capacidade | Implementação | Teste com simulação | Validação no Sandbox |
+|---|---|---|---|
+| POST `/auth/token` e cache/renovação Bearer | Implementado | Aprovado: sucesso, reutilização, expiração, 401 consecutivo, timeout e token inválido | Pendente: faltam host real e credenciais Sandbox |
+| GET `/v2/subscribers` com `page`, `size`, `q` e envelope `data/meta` | Implementado | Aprovado: paginação, resposta inválida, 401 e timeout | Pendente: faltam host real e credenciais Sandbox |
+| Bloqueio de reenvio agendado após escrita incerta | Implementado | Aprovado: 5xx e timeout ficam em reconciliação e não são reexecutados pelo scheduler | Não se aplica à API Algar nova; validação operacional EAI pendente |
+| Ação no painel ou API pública para o site | Não implementada | Não testado | Fora do escopo desta etapa |
+
+Suíte desta entrega: **13 testes do cliente Algar (simulados) e 18 testes de concorrência/agendamento relacionados**, incluídos na suíte Unit geral, que passou com 206 testes e 835 assertions.
+
+## Como executar a consulta no Sandbox
+
+1. Obtenha da Algar/RMS o hostname real do ambiente Sandbox e credenciais de Sandbox autorizadas para gerar token e listar assinantes. **Não use hosts ilustrativos da documentação e não use credenciais de Produção nesta etapa.**
+2. Disponibilize os valores somente no ambiente privado do EAI/secret manager (ou em um `.env` local não versionado): `ALGAR_RMS_BASE_URL`, `ALGAR_RMS_CLIENT_ID` e `ALGAR_RMS_CLIENT_SECRET`. A `.env.example` contém nomes de variáveis vazios, não credenciais nem hostname padrão.
+3. Atualize a configuração cacheada, se aplicável, e abra o Tinker no ambiente Sandbox:
+
+   ```bash
+   php artisan config:clear
+   php artisan tinker --execute='$result = app(\App\Services\Integrations\AlgarRms\AlgarRmsClient::class)->listSubscribers(page: 1, size: 20); print_r($result["meta"]);'
+   ```
+
+   O exemplo imprime somente os metadados de paginação, não os nomes/documentos retornados. Para verificar registros, trate `data` em uma sessão protegida e não copie PII para terminal compartilhado, log ou ticket.
+4. Registre horário, host Sandbox, identidade técnica/tenant usado, status HTTP e resultado sanitizado; não registre client secret, access token, corpo integral nem dados pessoais.
+
+Até esta etapa, o comando acima foi documentado, mas **não foi executado contra o Sandbox**: esta sessão não recebeu hostname nem credenciais de credenciamento. Também não há ainda action no painel nem endpoint do EAI para consumo pelo site; aplicações web não devem chamar o conector RMS diretamente.
+
 ## Observações de implementação
 
 1. O cliente usa `ALGAR_RMS_BASE_URL`, `ALGAR_RMS_CLIENT_ID` e `ALGAR_RMS_CLIENT_SECRET`; não há host padrão. Para esta entrega, configure exclusivamente a URL Sandbox fornecida no credenciamento.
 2. O cache de token é separado por host e credenciais, e a chave usa fingerprint SHA-256. O segredo bruto não é escrito em código, logs ou chave do cache.
 3. A listagem de assinantes aceita `page`, `size` e `q` e valida o envelope `data/meta`, incluindo `currentPage`, `pageSize`, `totalItems` e `totalPages`.
 4. Testes usam respostas HTTP simuladas. Sandbox não foi validado porque o host real e as credenciais de credenciamento não foram fornecidos a esta execução.
-5. Operações de escrita permanecem fora do escopo do cliente novo. No pipeline genérico, retries automáticos são limitados a GET/HEAD/OPTIONS; os envios de arquivos não têm retry HTTP automático.
+5. Escritas do pipeline genérico sem resultado confirmado geram `int_status=5` (Reconciliação pendente), deixam `next_run` nulo e saem da seleção automática do scheduler. Um operador deve reconciliar o estado com o provedor antes de retomar manualmente o endpoint. Consultas mantêm seus retries e reexecução agendada atuais.
+6. Operações de escrita permanecem fora do escopo do cliente Algar novo. No pipeline genérico, retries HTTP são limitados a GET/HEAD/OPTIONS; envios não idempotentes com falha ou timeout não são repetidos automaticamente pelo scheduler.

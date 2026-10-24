@@ -60,7 +60,7 @@ class CadInterfaceStatusResource extends Resource
                         'success' => fn($state) => $state == 1,
                         'danger' => fn($state) => $state == 2,
 			'info' => fn($state) => $state == 3,
-			'warning' => fn($state) => $state == 4
+                        'warning' => fn($state) => $state == 4 || $state == 5
 		    ])
 		    ->formatStateUsing(function ($state) {
                         return match ($state) {
@@ -68,7 +68,8 @@ class CadInterfaceStatusResource extends Resource
                             1 => 'Validado',
                             2 => 'Recusado',
 			    3 => 'Processado',
-			    4 => 'Excluído',
+                            4 => 'Excluído',
+                            5 => 'Reconciliação pendente',
                             default => 'Desconhecido',
                         };
                     })

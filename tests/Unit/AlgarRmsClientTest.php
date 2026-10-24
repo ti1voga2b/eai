@@ -2,6 +2,7 @@
 
 use App\Services\Integrations\AlgarRms\AlgarRmsClient;
 use App\Services\Integrations\AlgarRms\AlgarRmsException;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
@@ -172,6 +173,97 @@ test('does not request another token for a forbidden subscriber query', function
     Http::assertSentCount(2);
 });
 
+test('a second consecutive unauthorized response fails after exactly one controlled refresh', function () {
+    Http::preventStrayRequests();
+    Http::fake([
+        'https://sandbox.telecom-enabler.test/auth/token' => Http::sequence()
+            ->push(['access_token' => 'first-token', 'token_type' => 'Bearer', 'expires_in' => 3600])
+            ->push(['access_token' => 'second-token', 'token_type' => 'Bearer', 'expires_in' => 3600]),
+        'https://sandbox.telecom-enabler.test/v2/subscribers*' => Http::sequence()
+            ->push(['message' => 'unauthorized'], 401)
+            ->push(['message' => 'still unauthorized'], 401),
+    ]);
+
+    expect(fn () => app(AlgarRmsClient::class)->listSubscribers())
+        ->toThrow(AlgarRmsException::class, 'subscriber listing failed (HTTP 401)');
+
+    Http::assertSentCount(4);
+});
+
+test('authentication transport timeout is sanitized and is not retried', function () {
+    Http::preventStrayRequests();
+    $requestCount = 0;
+    Http::fake([
+        'https://sandbox.telecom-enabler.test/auth/token' => function () use (&$requestCount) {
+            $requestCount++;
+            throw new ConnectionException('simulated timeout');
+        },
+    ]);
+
+    expect(fn () => app(AlgarRmsClient::class)->listSubscribers())
+        ->toThrow(AlgarRmsException::class, 'token acquisition transport failed');
+
+    expect($requestCount)->toBe(1);
+});
+
+test('subscriber query transport timeout is sanitized and is not retried', function () {
+    Http::preventStrayRequests();
+    $subscriberRequestCount = 0;
+    Http::fake([
+        'https://sandbox.telecom-enabler.test/auth/token' => Http::response([
+            'access_token' => 'valid-token',
+            'token_type' => 'Bearer',
+            'expires_in' => 3600,
+        ]),
+        'https://sandbox.telecom-enabler.test/v2/subscribers*' => function () use (&$subscriberRequestCount) {
+            $subscriberRequestCount++;
+            throw new ConnectionException('simulated timeout');
+        },
+    ]);
+
+    expect(fn () => app(AlgarRmsClient::class)->listSubscribers())
+        ->toThrow(AlgarRmsException::class, 'subscriber listing transport failed');
+
+    Http::assertSentCount(1);
+    expect($subscriberRequestCount)->toBe(1);
+});
+
+test('rejects malformed token and subscriber responses without exposing their bodies', function () {
+    Http::preventStrayRequests();
+    Http::fake([
+        'https://sandbox.telecom-enabler.test/auth/token' => Http::sequence()
+            ->push(['access_token' => 'token-without-expiry', 'token_type' => 'Bearer'])
+            ->push(['access_token' => 'valid-token', 'token_type' => 'Bearer', 'expires_in' => 3600]),
+        'https://sandbox.telecom-enabler.test/v2/subscribers*' => Http::response([
+            'data' => [['id' => 'bad', 'name' => 'private-name', 'document' => 'private-document']],
+            'meta' => ['currentPage' => 1, 'pageSize' => 50, 'totalItems' => 1, 'totalPages' => '1'],
+            'diagnostic' => 'private-response-detail',
+        ]),
+    ]);
+
+    try {
+        app(AlgarRmsClient::class)->listSubscribers();
+        test()->fail('Expected malformed token data to fail validation.');
+    } catch (AlgarRmsException $exception) {
+        expect($exception->getMessage())->toBe('Algar RMS token response validation failed (HTTP 502)')
+            ->not->toContain('private-name')
+            ->not->toContain('private-document');
+    }
+
+    Cache::flush();
+
+    try {
+        app(AlgarRmsClient::class)->listSubscribers();
+        test()->fail('Expected malformed subscriber data to fail validation.');
+    } catch (AlgarRmsException $exception) {
+        expect($exception->getMessage())->toBe('Algar RMS subscriber listing response validation failed (HTTP 502)')
+            ->not->toContain('private-response-detail')
+            ->not->toContain('private-document');
+    }
+
+    Http::assertSentCount(3);
+});
+
 test('rejects missing or placeholder host configuration before making a request', function (string $baseUrl) {
     config()->set('services.algar_rms.base_url', $baseUrl);
     Http::preventStrayRequests();
@@ -185,7 +277,6 @@ test('rejects missing or placeholder host configuration before making a request'
     'missing host' => [''],
     'documentation placeholder' => ['https://sandbox-api.example.com'],
 ]);
-
 
 test('generic fetch command does not retry a provider-side POST', function () {
     $url = 'https://provider.invalid/provision';
@@ -210,8 +301,8 @@ test('generic fetch command does not retry a provider-side POST', function () {
     ]);
     $endpoint->setRelation('client', $client);
 
-    $command = new \App\Console\Commands\FetchEndpoints();
-    $buffer = new \Symfony\Component\Console\Output\BufferedOutput();
+    $command = new \App\Console\Commands\FetchEndpoints;
+    $buffer = new \Symfony\Component\Console\Output\BufferedOutput;
     $command->setOutput(new \Illuminate\Console\OutputStyle(
         new \Symfony\Component\Console\Input\ArrayInput([]),
         $buffer
